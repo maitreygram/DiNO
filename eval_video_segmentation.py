@@ -22,6 +22,7 @@ from urllib.request import urlopen
 import argparse
 import numpy as np
 from tqdm import tqdm
+from pdb import set_trace
 
 import cv2
 import torch
@@ -39,7 +40,7 @@ def eval_video_tracking_davis(args, model, frame_list, video_dir, first_seg, seg
     """
     Evaluate tracking on a video given first frame & segmentation
     """
-    video_folder = os.path.join(args.output_dir, video_dir.split('/')[-1])
+    video_folder = os.path.join(args.output_dir + "video_" + str(args.layer) + "_mask_" + str(args.size_mask_neighborhood) + "_topk_" + str(args.topk), video_dir.split('/')[-1])
     os.makedirs(video_folder, exist_ok=True)
 
     # The queue stores the n preceeding frames
@@ -48,7 +49,7 @@ def eval_video_tracking_davis(args, model, frame_list, video_dir, first_seg, seg
     # first frame
     frame1, ori_h, ori_w = read_frame(frame_list[0])
     # extract first frame feature
-    frame1_feat = extract_feature(model, frame1).T #  dim x h*w
+    frame1_feat = extract_feature(model, frame1, layer=args.layer).T #  dim x h*w
 
     # saving first segmentation
     out_path = os.path.join(video_folder, "00000.png")
@@ -115,7 +116,7 @@ def label_propagation(args, model, frame_tar, list_frame_feats, list_segs, mask_
     propagate segs of frames in list_frames to frame_tar
     """
     ## we only need to extract feature of the target frame
-    feat_tar, h, w = extract_feature(model, frame_tar, return_h_w=True)
+    feat_tar, h, w = extract_feature(model, frame_tar, return_h_w=True, layer=args.layer)
 
     return_feat_tar = feat_tar.T # dim x h*w
 
@@ -140,6 +141,9 @@ def label_propagation(args, model, frame_tar, list_frame_feats, list_segs, mask_
     aff[aff < tk_val_min] = 0
 
     aff = aff / torch.sum(aff, keepdim=True, axis=0)
+    # aff = torch.inverse(torch.eye(aff.shape[0]).cuda()-infi_alpha*aff)
+    # aff = aff / torch.sum(aff, keepdim=True, axis=0)
+    # set_trace()
 
     list_segs = [s.cuda() for s in list_segs]
     segs = torch.cat(list_segs)
@@ -148,11 +152,11 @@ def label_propagation(args, model, frame_tar, list_frame_feats, list_segs, mask_
     seg_tar = torch.mm(segs, aff)
     seg_tar = seg_tar.reshape(1, C, h, w)
     return seg_tar, return_feat_tar, mask_neighborhood
- 
 
-def extract_feature(model, frame, return_h_w=False):
+
+def extract_feature(model, frame, return_h_w=False, layer=1):
     """Extract one frame feature everytime."""
-    out = model.get_intermediate_layers(frame.unsqueeze(0).cuda(), n=1)[0]
+    out = model.get_intermediate_layers(frame.unsqueeze(0).cuda(), n=layer)[0]
     out = out[:, 1:, :]  # we discard the [CLS] token
     h, w = int(frame.shape[1] / model.patch_embed.patch_size), int(frame.shape[2] / model.patch_embed.patch_size)
     dim = out.shape[-1]
@@ -247,7 +251,6 @@ def color_normalize(x, mean=[0.485, 0.456, 0.406], std=[0.228, 0.224, 0.225]):
         t.div_(s)
     return x
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Evaluation with video object segmentation on DAVIS 2017')
     parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
@@ -262,7 +265,10 @@ if __name__ == '__main__':
         help="We restrict the set of source nodes considered to a spatial neighborhood of the query node")
     parser.add_argument("--topk", type=int, default=5, help="accumulate label from top k neighbors")
     parser.add_argument("--bs", type=int, default=6, help="Batch size, try to reduce if OOM")
+    parser.add_argument("--layer", type=int, default=1, help="Which model layer features from the end to use for affinity matrix")
+    parser.add_argument("--gpu", type=str, default="0", help="GPU number to use")
     args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     print("git:\n  {}\n".format(utils.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
