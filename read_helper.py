@@ -31,8 +31,8 @@ def get_seg_list(frame_list):
 	seg_list = [frame.replace("JPEGImages", "Annotations").replace("jpg", "png") for frame in frame_list]
 	return seg_list
 
-def _convert_image_to_rgb(image):
-	return image.convert("RGB")
+# def _convert_image_to_rgb(image):
+# 	return image.convert("RGB")
 
 def preprocess_clip(image, tw, th):
 	preprocess = transforms.Compose([
@@ -60,16 +60,6 @@ def preprocess_vit(image, tw, th):
 		transforms.Resize((th, tw)), 
 		transforms.ToTensor(),
 		transforms.Normalize(0.5, 0.5),
-	])(image)
-
-	return image
-
-
-def preprocess_detr(image, tw, th):
-	image = transforms.Compose([
-		transforms.Resize((th, tw)), 
-		transforms.ToTensor(),
-		transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 	])(image)
 
 	return image
@@ -126,13 +116,13 @@ def read_frame(frame_dir, model_name, scale_size=[480]):
 	read a single frame & preprocess
 	"""
 
-	cv2_models = ['dino', 'deit', 'mlp_mixer', 'resnet50', 'resnet152', 'resnext', 'beit', 'convnext']
+	cv2_models = ['dino.vit', 'dino.conv', 'deit', 'mlp_mixer', 'resnet50', 'resnet152', 'resnet200', 'resnext', 'beit']
 	if model_name in cv2_models:
 		img = cv2.imread(frame_dir)
 		ori_h, ori_w, _ = img.shape
 
 	else:
-		img = Image.open(frame_dir)
+		img = Image.open(frame_dir).convert('RGB')
 		ori_w, ori_h = img.size
 
 	if len(scale_size) == 1:
@@ -149,30 +139,26 @@ def read_frame(frame_dir, model_name, scale_size=[480]):
 	
 	if 'clip' in model_name:
 		img = preprocess_clip(img, tw, th)
-	elif model_name == 'dino' or model_name == 'deit' or model_name == 'resnet50' or model_name == 'resnet152' or model_name == 'resnext':
+	elif 'dino' in model_name or model_name == 'deit' or 'resnet' in model_name or model_name == 'resnext':
 		img = preprocess_general(img, tw, th)
-	elif model_name == 'vit_B_16_imagenet1k':
+	elif 'vit' in model_name == 'vit_B_16_imagenet1k' or model_name == 'vit_small_patch16_224':
 		img = preprocess_vit(img, tw, th)
-	elif model_name == 'vit_B_32_imagenet1k':
-		img = preprocess_vit(img, tw, th)
-	elif model_name == 'detr':
-		img = preprocess_detr(img, tw, th)
 	elif model_name == 'swin':
 		img = preprocess_swin(img, tw, th)
 	elif model_name == 'mae':
 		img = preprocess_mae(img, tw, th)
 	elif model_name == 'convnext':
 		img = preprocess_convnext(img, tw, th)
-	elif model_name == 'swav':
+	elif 'swav' in model_name:
 		img = preprocess_swav(img, tw, th)
-	if model_name == 'mlp_mixer' or model_name == 'beit':
+	elif model_name == 'mlp_mixer' or model_name == 'beit':
 		img = preprocess_mlp_mixer_or_beit(img, tw, th)
 
 	return img, ori_h, ori_w
 
 
 def resize_seg(seg, _tw, _th, factor, model_name, layer):
-	sp_models = ['swin', 'convnext', 'swav', 'clip.conv']
+	sp_models = ['swin', 'convnext', 'swav', 'swav_w2', 'clip.conv', 'dino.conv']
 	if model_name not in sp_models:
 		return np.array(seg.resize((_tw // factor, _th // factor), 0))
 
@@ -183,7 +169,7 @@ def resize_seg(seg, _tw, _th, factor, model_name, layer):
 			return np.array(seg.resize((_tw // factor, _th // factor), 0))
 		if layer == 4:
 			return np.array(seg.resize((_tw // factor * 2, _th // factor * 2), 0))
-	elif model_name == 'convnext' or model_name == 'clip.conv':
+	elif model_name == 'convnext' or model_name == 'clip.conv' or model_name == 'dino.conv' or model_name == 'swav_w2':
 		if layer == 1:
 			return np.array(seg.resize((_tw // factor // 2, _th // factor // 2), 0))
 		if layer == 2:
@@ -201,6 +187,7 @@ def resize_seg(seg, _tw, _th, factor, model_name, layer):
 			return np.array(seg.resize((_tw // factor * 2 + 1, _th // factor * 2 + 1), 0))
 		if layer == 4:
 			return np.array(seg.resize((_tw // factor * 4 + 1, _th // factor * 4 + 1), 0))
+
 	return
 
 

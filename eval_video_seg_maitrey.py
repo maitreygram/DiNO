@@ -29,9 +29,13 @@ import torch.nn as nn
 from torch.nn import functional as F
 from PIL import Image
 from torchvision import transforms
+import torchvision.models as models
 
 import utils
 import vision_transformer as vits
+from transformers import BeitModel
+# from modeling import MlpMixer
+import ml_collections
 
 from read_helper import *
 from affinity_helper import *
@@ -52,12 +56,12 @@ def eval_video_tracking_davis(args, model, model_name, frame_list, video_dir, fi
 
 	# first frame
 	frame1, ori_h, ori_w = read_frame(frame_list[0], model_name, scale_size=img_size)
+	set_trace()
 	# extract first frame feature
 
 	patch_h = first_seg.shape[2]
 	patch_w = first_seg.shape[3]
 	frame1_feat = extract_feature(model, args, frame1, layer=args.layer, model_name=model_name, patch_h=patch_h, patch_w=patch_w).T #  dim x h*w
-	# set_trace()
 
 	# saving first segmentation
 	out_path = os.path.join(video_folder, "00000.png")
@@ -128,7 +132,7 @@ def label_propagation(args, model, frame_tar, list_frame_feats, list_segs, mask_
 	segs = torch.cat(list_segs)
 	nmb_context, C, h, w = segs.shape
 	segs = segs.reshape(nmb_context, C, -1).transpose(2, 1).reshape(-1, C).T # C x nmb_context*h*w
-	# set_trace()
+	set_trace()
 	seg_tar = torch.mm(segs, aff.to(segs.dtype))
 	seg_tar = seg_tar.reshape(1, C, h, w)
 	return seg_tar, return_feat_tar, mask_neighborhood
@@ -136,9 +140,11 @@ def label_propagation(args, model, frame_tar, list_frame_feats, list_segs, mask_
 
 # building network
 def load_model(model_name, args, ori_h, ori_w):
-	if model_name=='dino':
-		model = vits.__dict__[args.arch](patch_size=args.patch_size, num_classes=0)
-		utils.load_pretrained_weights(model, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
+	if model_name=='dino.vit':
+		model = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
+
+	if model_name=='dino.conv':
+		model = torch.hub.load('facebookresearch/dino:main', 'dino_resnet50')
 	
 	elif model_name=='deit':
 		model = torch.hub.load('facebookresearch/deit:main', 'deit_base_patch16_224', pretrained=True)
@@ -153,40 +159,51 @@ def load_model(model_name, args, ori_h, ori_w):
 		model = torch.nn.Sequential(*(final_model[:-1]))
 		'''  
 	
-	elif model_name=='clip.conv':
+	elif model_name=='clip.vit':
 		import clip
-		model, preprocess = clip.load("RN50")
+		model, preprocess = clip.load("ViT-B/16")
 		model = model.visual
-		model.patch_size = args.patch_size
-		# model.transformer = [ele for ele in model.transformer.children()][0]
-		# model.transformer = torch.nn.Sequential(*[ele for ele in model.transformer.children()])
-	
-	elif model_name=='vit_B_16_imagenet1k':
-		from pytorch_pretrained_vit import ViT
-		model = ViT('B_16_imagenet1k', pretrained=True)
-		model.patch_size = args.patch_size
 		model.transformer = [ele for ele in model.transformer.children()][0]
 		model.transformer = torch.nn.Sequential(*[ele for ele in model.transformer.children()])
+
+	elif model_name=='clip.conv':
+		import clip
+		model, preprocess = clip.load("RN50x4")
+		model = model.visual
+	
+	elif model_name=='vit_B_16_imagenet1k':
+		# from pytorch_pretrained_vit import ViT
+		# model = ViT('B_16_imagenet1k', pretrained=True)
+		# model.patch_size = args.patch_size
+		# model.transformer = [ele for ele in model.transformer.children()][0]
+		# model.transformer = torch.nn.Sequential(*[ele for ele in model.transformer.children()])
+		import timm
+		model = timm.create_model('vit_base_patch16_224', pretrained=True, img_size=(ori_h, ori_w))
+
+	elif model_name=='vit_small_patch16_224':
+		import timm
+		model = timm.create_model('vit_small_patch16_224', pretrained=True, img_size=(ori_h, ori_w))
 
 	elif model_name=='vit_B_32_imagenet1k':
 		from pytorch_pretrained_vit import ViT
-		model = ViT('B_16_imagenet1k', pretrained=True)
-		model.patch_size = args.patch_size
+		model = ViT('B_32_imagenet1k', pretrained=True)
 		model.transformer = [ele for ele in model.transformer.children()][0]
 		model.transformer = torch.nn.Sequential(*[ele for ele in model.transformer.children()])
 
-	elif model_name=="detr":
-		model = torch.hub.load('facebookresearch/detr', 'detr_resnet50', pretrained=True)
-
 	elif model_name=="swin":
 		import timm
-		model = timm.create_model('swin_base_patch4_window7_224', pretrained=True, img_size=(ori_h, ori_w), pretrained_strict=False)
-		model.patch_size = args.patch_size
+		model_weights = timm.create_model('swin_tiny_patch4_window7_224', pretrained=True).state_dict()
+		model_keys = list(model_weights.keys())
+		model = timm.create_model('swin_tiny_patch4_window7_224', pretrained=False, img_size=(ori_h, ori_w))
+		for k in model_keys:
+			if (model.state_dict()[k].shape != model_weights[k].shape):
+				model_weights.pop(k, None)
+				# print(k)
+		model.load_state_dict(model_weights, strict=False)
 
 	elif model_name=="mae":
 		import models_mae
 		model = getattr(models_mae, "mae_vit_base_patch16")(img_size=(ori_h, ori_w))
-		model.patch_size = args.patch_size
 		checkpoint = torch.load("/playpen-storage/maitrey/ViT_VOS/mae_pretrain_vit_base.pth", map_location='cpu')
 		checkpoint['model']['pos_embed'] = interpolate_pos_encoding_mae(
 			model, checkpoint['model']['pos_embed'].squeeze(0), ori_h//args.patch_size, ori_w//args.patch_size)
@@ -195,18 +212,20 @@ def load_model(model_name, args, ori_h, ori_w):
 	elif model_name=="convnext":
 		import timm
 		model = timm.create_model(
-			"convnext_base", 
+			"convnext_tiny", 
 			pretrained=True, 
 			# drop_path_rate=0.2,
 			# layer_scale_init_value=1e-6,
 			# head_init_scale=1.0,
 			)
-		model.patch_size = args.patch_size
 
 	elif model_name=="swav":
 		model = torch.hub.load('facebookresearch/swav:main', 'resnet50')
 		model.padding = nn.ConstantPad2d(1, 0.0)
-		model.patch_size = args.patch_size
+
+	elif model_name=="swav_w2":
+		model = torch.hub.load('facebookresearch/swav:main', 'resnet50w2')
+		# model.padding = nn.ConstantPad2d(1, 0.0)
 
 	elif model_name=='mlp_mixer':
 		def get_mixer_b16_config():
@@ -232,36 +251,39 @@ def load_model(model_name, args, ori_h, ori_w):
 		config = get_mixer_b16_config()
 		model = MlpMixer(config, 224 , num_classes=10, patch_size=16, zero_head=True)
 		model.load_from(np.load('./imagenet1k-Mixer-B_16.npz'))
-		model.patch_size = args.patch_size
 
 	elif model_name == 'resnet50':
 		model = models.resnet50(pretrained=True)
-		model.patch_size = args.patch_size
 
 	elif model_name == 'resnet152':
 		model = models.resnet152(pretrained=True)
-		model.patch_size = args.patch_size
+
+	elif model_name == 'resnet200':
+		import timm
+		model = timm.create_model('resnet200d', pretrained=True)
 
 	elif model_name == 'resnext':
 		model = torch.hub.load('pytorch/vision:v0.10.0', 'resnext50_32x4d', pretrained=True)
-		model.patch_size = args.patch_size
 
 	elif model_name == 'beit':
 		model = BeitModel.from_pretrained('microsoft/beit-base-patch16-224')
-		model.patch_size = args.patch_size
 
+	else:
+		raise Exception('Model name not registered')
+
+	model.patch_size = args.patch_size
 	model.cuda()
 	for param in model.parameters():
 		param.requires_grad = False
 	model.eval()
-	print(f"Model {model_name} - {args.patch_size}x{args.patch_size} built.")
+	print(f"Model {model_name} - {args.patch_size}. Image size = {ori_h}, {ori_w}. Parameters = {np.round(sum(p.numel() for p in model.parameters())/1000000, 2)}M.")
 	return model
 
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser('Evaluation with video object segmentation on DAVIS 2017')
 	parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
-	parser.add_argument('--arch', default='vit_small', type=str,
+	parser.add_argument('--arch', default='vit_base', type=str,
 		choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
 	parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
 	parser.add_argument("--checkpoint_key", default="teacher", type=str, help='Key to use in the checkpoint (example: "teacher")')
@@ -284,7 +306,7 @@ if __name__ == '__main__':
 	model_name = args.model_name
 	img_size = [480, 896]
 	model = load_model(model_name, args, img_size[0], img_size[1])
-	# set_trace()
+	set_trace()
 
 	color_palette = []
 	for line in urlopen("https://raw.githubusercontent.com/Liusifei/UVC/master/libs/data/palette.txt"):

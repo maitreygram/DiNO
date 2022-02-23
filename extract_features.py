@@ -31,7 +31,7 @@ def extract_feature(model, args, frame, return_h_w=False, layer=1, model_name='d
 
 
 def get_intermediate_layers(model, x, n=1, model_name='dino'):
-	if model_name == 'dino':
+	if model_name == 'dino.vit':
 		out = get_intermediate_layers_dino(model, x.unsqueeze(0).cuda(), n)[0][0, 1:, :]
 		h, w = x.shape[1] // model.patch_size, x.shape[2] // model.patch_size
 		dim = out.shape[-1]
@@ -41,7 +41,7 @@ def get_intermediate_layers(model, x, n=1, model_name='dino'):
 		h, w = x.shape[1] // model.patch_size, x.shape[2] // model.patch_size
 		dim = out.shape[-1]
 		return out, h, w, dim
-	if model_name == 'vit_B_16_imagenet1k':
+	if model_name == 'vit_B_16_imagenet1k' or model_name == 'vit_small_patch16_224':
 		out = get_intermediate_layers_vit(model, x.unsqueeze(0).cuda(), n)[0][0, 1:, :]
 		h, w = x.shape[1] // model.patch_size, x.shape[2] // model.patch_size
 		dim = out.shape[-1]
@@ -78,6 +78,18 @@ def get_intermediate_layers(model, x, n=1, model_name='dino'):
 		if n == 4:
 			h, w = x.shape[1] // model.patch_size * 4, x.shape[2] // model.patch_size * 4
 		return out, h, w, dim
+	if model_name == 'dino.conv':
+		out = get_intermediate_layers_dino_conv(model, x.unsqueeze(0).cuda(), n)[0][0].permute((1, 2, 0))
+		dim = out.shape[-1]
+		if n == 1:
+			h, w = x.shape[1] // model.patch_size // 2, x.shape[2] // model.patch_size // 2
+		if n == 2:
+			h, w = x.shape[1] // model.patch_size, x.shape[2] // model.patch_size
+		if n == 3:
+			h, w = x.shape[1] // model.patch_size * 2, x.shape[2] // model.patch_size * 2
+		if n == 4:
+			h, w = x.shape[1] // model.patch_size * 4, x.shape[2] // model.patch_size * 4
+		return out, h, w, dim
 	if model_name == 'clip.conv':
 		out = get_intermediate_layers_clip_conv(model, x.unsqueeze(0).cuda(), n)[0][0].permute((1, 2, 0))
 		dim = out.shape[-1]
@@ -103,7 +115,20 @@ def get_intermediate_layers(model, x, n=1, model_name='dino'):
 			h, w = x.shape[1] // model.patch_size * 4 + 1, x.shape[2] // model.patch_size * 4 + 1
 		return out, h, w, dim
 
-	if model_name == 'resnet50' or model_name == 'resnet152' or model_name == 'resnext':
+	if model_name == 'swav_w2':
+		out = get_intermediate_layers_swav(model, x.unsqueeze(0).cuda(), n)[0][0].permute((1, 2, 0))
+		dim = out.shape[-1]
+		if n == 1:
+			h, w = x.shape[1] // model.patch_size // 2, x.shape[2] // model.patch_size // 2
+		if n == 2:
+			h, w = x.shape[1] // model.patch_size, x.shape[2] // model.patch_size
+		if n == 3:
+			h, w = x.shape[1] // model.patch_size * 2, x.shape[2] // model.patch_size * 2
+		if n == 4:
+			h, w = x.shape[1] // model.patch_size * 4, x.shape[2] // model.patch_size * 4
+		return out, h, w, dim
+
+	if 'resnet' in model_name or model_name == 'resnext':
 		out = get_intermediate_layers_resnet(model, x.unsqueeze(0).cuda(), n)
 		num_patches = patch_w*patch_h
 		out = out[0]
@@ -157,6 +182,7 @@ def interpolate_pos_encoding(model, positional_embedding, x, w, h):
 
 
 def get_intermediate_layers_dino(model, x, n=1):
+	out = model(x)
 	x = model.prepare_tokens(x)
 	# we return the output tokens from the `n` last blocks
 	output = []
@@ -165,6 +191,32 @@ def get_intermediate_layers_dino(model, x, n=1):
 		if len(model.blocks) - i <= n:
 			output.append(model.norm(x))
 	return output
+
+def get_intermediate_layers_dino_conv(model, x, n=1):
+	x = model.conv1(x)
+	x = model.bn1(x)
+	x = model.relu(x)
+	x = model.maxpool(x)
+
+	if n == 0:
+		return [x]
+	x = model.layer1(x)
+	if n == 4:
+		return [x]
+	x = model.layer2(x)
+	if n == 3:
+		return [x]
+	x = model.layer3(x)
+	if n == 2:
+		# set_trace()
+		return [x]
+	x = model.layer4(x)
+
+	# x = model.avgpool(x)
+	# x = torch.flatten(x, 1)
+	# x = model.fc(x)
+
+	return [x]
 
 
 def get_intermediate_layers_clip_vit(model, x, n=1):
@@ -214,6 +266,7 @@ def get_intermediate_layers_clip_conv(model, x, n=1):
 		return [x]
 	x = model.layer3(x)
 	if n == 2:
+		# set_trace()
 		return [x]
 	x = model.layer4(x)
 	# x = model.attnpool(x)
@@ -226,59 +279,42 @@ def get_intermediate_layers_vit(model, x, n=1):
 	Args:
 		x (tensor): `b,c,fh,fw`
 	"""
-	b, c, fh, fw = x.shape
-	x = model.patch_embedding(x)  # b,d,gh,gw
-	x = x.flatten(2).transpose(1, 2)  # b,gh*gw,d
-	if hasattr(model, 'class_token'):
-		x = torch.cat((model.class_token.expand(b, -1, -1), x), dim=1)  # b,gh*gw+1,d
-	if hasattr(model, 'positional_embedding'):
-		x = x + interpolate_pos_encoding(model, model.positional_embedding.pos_embedding.squeeze(0), x, fh, fw)  # b,gh*gw+1,d 
-	# set_trace()
-	# x = model.transformer(x)  # b,gh*gw+1,d
+	# b, c, fh, fw = x.shape
+	# x = model.patch_embedding(x)  # b,d,gh,gw
+	# x = x.flatten(2).transpose(1, 2)  # b,gh*gw,d
+	# if hasattr(model, 'class_token'):
+	# 	x = torch.cat((model.class_token.expand(b, -1, -1), x), dim=1)  # b,gh*gw+1,d
+	# if hasattr(model, 'positional_embedding'):
+	# 	x = x + interpolate_pos_encoding(model, model.positional_embedding.pos_embedding.squeeze(0), x, fh, fw)  # b,gh*gw+1,d 
+	# # set_trace()
+	# # x = model.transformer(x)  # b,gh*gw+1,d
+	# output = []
+	# for i, blk in enumerate(model.transformer): 
+	# 	x = blk(x, None)
+	# 	x1 = copy.deepcopy(x)
+	# 	if hasattr(model, 'pre_logits'):
+	# 		x1 = model.pre_logits(x)
+	# 		# x1 = torch.tanh(x1)
+	# 		# x1 = model.norm(x1)
+	# 	# if hasattr(model, 'fc'):
+	# 	#     x1 = model.norm(x1)[:, 0]  # b,d
+	# 	#     x1 = model.fc(x1)  # b,num_classes
+	# 	if len(model.transformer) - i <= n:
+	# 		output.append(x1)
+	# return output
+
+	x = model.patch_embed(x)
+	cls_token = model.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+	x = torch.cat((cls_token, x), dim=1)
+	x = model.pos_drop(x + model.pos_embed)
 	output = []
-	for i, blk in enumerate(model.transformer): 
-		x = blk(x, None)
+	for i, blk in enumerate(model.blocks): 
+		x = blk(x)
 		x1 = copy.deepcopy(x)
-		if hasattr(model, 'pre_logits'):
-			x1 = model.pre_logits(x)
-			# x1 = torch.tanh(x1)
-			# x1 = model.norm(x1)
-		# if hasattr(model, 'fc'):
-		#     x1 = model.norm(x1)[:, 0]  # b,d
-		#     x1 = model.fc(x1)  # b,num_classes
-		if len(model.transformer) - i <= n:
+		x1 = model.norm(x1)
+		if len(model.blocks) - i <= n:
 			output.append(x1)
 	return output
-
-
-def get_intermediate_layers_detr(model, x, n=1):
-	"""The forward expects a NestedTensor, which consists of:
-		 - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
-		 - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
-
-	  It returns a dict with the following elements:
-		 - "pred_logits": the classification logits (including no-object) for all queries.
-						  Shape= [batch_size x num_queries x (num_classes + 1)]
-		 - "pred_boxes": The normalized boxes coordinates for all queries, represented as
-						 (center_x, center_y, height, width). These values are normalized in [0, 1],
-						 relative to the size of each individual image (disregarding possible padding).
-						 See PostProcess for information on how to retrieve the unnormalized bounding box.
-		 - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
-						  dictionnaries containing the two above keys for each decoder layer.
-	"""
-	set_trace()
-	features, pos = model.backbone(x)
-
-	src, mask = features[-1].decompose()
-	assert mask is not None
-	hs = model.transformer(model.input_proj(src), mask, model.query_embed.weight, pos[-1])[0]
-
-	outputs_class = model.class_embed(hs)
-	outputs_coord = model.bbox_embed(hs).sigmoid()
-	out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-	if model.aux_loss:
-		out['aux_outputs'] = model._set_aux_loss(outputs_class, outputs_coord)
-	return out
 
 
 def get_intermediate_layers_swin(model, x, n=1):
@@ -348,7 +384,7 @@ def get_intermediate_layers_mae(model, x, n=1):
 	for i, blk in enumerate(model.blocks): 
 		x = blk(x)
 		x1 = copy.deepcopy(x)
-		# x1 = model.norm(x1)
+		x1 = model.norm(x1)
 		if len(model.blocks) - i <= n:
 			output.append(x1)
 	# set_trace()
